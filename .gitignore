@@ -1,0 +1,18 @@
+# Local browser profiles and caches
+.tmp-chrome/
+
+# Local agent configuration
+.agents/
+.codex/
+
+# Operating system files
+.DS_Store
+
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies and logs
+node_modules/
+*.log

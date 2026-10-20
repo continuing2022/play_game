@@ -1,0 +1,36 @@
+html, body {
+  margin: 0;
+  height: 100%;
+  background: #04060a;
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Songti SC', 'STKaiti', 'KaiTi', 'SimSun', serif;
+}
+
+#stage {
+  position: relative;
+  line-height: 0;
+}
+
+canvas {
+  display: block;
+  background: #04060a;
+  box-shadow: 0 0 100px rgba(0, 0, 0, 0.9);
+}
+
+#err {
+  position: fixed;
+  left: 10px;
+  top: 10px;
+  z-index: 20;
+  color: #ff6b6b;
+  font: 12px/1.5 ui-monospace, Menlo, monospace;
+  white-space: pre-wrap;
+  pointer-events: none;
+  max-width: 90vw;
+}

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>墨影 · 古风决斗</title>
+<link rel="stylesheet" href="css/style.css">
+<link rel="preload" as="image" href="assets/background.webp">
+</head>
+<body>
+<div id="stage">
+  <canvas id="game" width="1280" height="720"></canvas>
+</div>
+<div id="err"></div>
+
+<script>
+  window.addEventListener('error', function (e) {
+    document.title = 'ERR: ' + e.message;
+    var el = document.getElementById('err');
+    if (el) el.textContent = e.message + '\n' + ((e.error && e.error.stack) || '');
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    document.title = 'ERR: ' + ((e.reason && e.reason.message) || e.reason);
+  });
+</script>
+
+<script src="js/util.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/background.js"></script>
+<script src="js/fx.js"></script>
+<script src="js/fighter.js"></script>
+<script src="js/ai.js"></script>
+<script src="js/game.js"></script>
+<script>
+  window.addEventListener('load', function () {
+    var canvas = document.getElementById('game');
+    var game = new Game(canvas);
+    window.__game = game;
+    game.start();
+  });
+</script>
+</body>
+</html>
