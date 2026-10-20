@@ -2,7 +2,6 @@
   'use strict';
 
   var U = g.U;
-  var GROUND = U.GROUND;
   var MAX_METER = g.MAX_METER;
   var ULT = g.ULT;
 
@@ -103,6 +102,7 @@
     this.flash = 0;
     this.zoom = 1;
     this.zoomTarget = 1;
+    this.zoomHold = 0;
     this.roundOver = false;
     this.banner = null;
     this.toast = null;
@@ -144,6 +144,8 @@
       this.setupProjScene();
     } else if (this.scenario === 'skills') {
       this.setupSkillsScene();
+    } else if (this.scenario === 'depth') {
+      this.setupDepthScene();
     } else if (this.scenario === 'sub') {
       this.setupSubScene();
     } else if (this.scenario === 'guard') {
@@ -255,6 +257,10 @@
   };
 
   Game.prototype.updateCamera = function (dt) {
+    if (this.zoomHold > 0) {
+      this.zoomHold = Math.max(0, this.zoomHold - dt);
+      if (this.zoomHold === 0) this.zoomTarget = 1;
+    }
     this.shake *= Math.exp(-5.2 * dt);
     if (this.shake < 0.4) this.shake = 0;
     this.flash = Math.max(0, this.flash - dt * 2.9);
@@ -324,6 +330,7 @@
     this.flash = 0;
     this.zoom = 1;
     this.zoomTarget = 1;
+    this.zoomHold = 0;
     this.banner = null;
     this.result = null;
     this.hintT = 0;
@@ -333,6 +340,9 @@
     this.ultCaster = null;
     this.ai[0] = mode === 0 ? new g.AI(this, this.fighters[0], this.fighters[1]) : null;
     this.ai[1] = (mode === 0 || mode === 1) ? new g.AI(this, this.fighters[1], this.fighters[0]) : null;
+    // 人类玩家松手后保持朝向；AI 需要空闲时自动转向对手才能正常瞄准
+    this.fighters[0].autoFace = !!this.ai[0];
+    this.fighters[1].autoFace = !!this.ai[1];
     this.audio.ensure();
     this.audio.ui();
   };
@@ -363,7 +373,7 @@
     this.paused = true;
   };
 
-  // 自检用：展示技能栏（冷却 / 内力）与「按住方向键朝该方向出招」
+  // 自检用：展示技能栏（冷却 / 内力）与「按住左右方向朝该方向出招」
   Game.prototype.setupSkillsScene = function () {
     this.startMatch(2);
     var i;
@@ -383,6 +393,24 @@
     this.pressed.add('Comma');
     this.step(1 / 60);
     for (i = 0; i < 12; i++) this.step(1 / 60);
+    this.paused = true;
+  };
+
+  // 自检用：展示四向移动的纵深透视（后小前大 / 前后遮挡）
+  Game.prototype.setupDepthScene = function () {
+    this.startMatch(2);
+    var i;
+    for (i = 0; i < 110; i++) this.step(1 / 60);
+    var f0 = this.fighters[0];
+    var f1 = this.fighters[1];
+    f0.x = 450;
+    f0.y = U.DEPTH_MIN + 18;
+    f1.x = 830;
+    f1.y = U.DEPTH_MAX - 18;
+    f0.facing = 1;
+    f1.facing = -1;
+    this.hintT = 0;
+    this.banner = null;
     this.paused = true;
   };
 
@@ -434,6 +462,7 @@
     this.timeScale = 1;
     this.zoom = 1;
     this.zoomTarget = 1;
+    this.zoomHold = 0;
     this.shake = 0;
     this.flash = 0;
     this.hitstop = 0;
@@ -547,7 +576,8 @@
     var dx = b.x - a.x;
     var min = 58;
     if (Math.abs(dx) < min) {
-      var s = dx >= 0 ? 1 : -1;
+      // 墙边瞬身可能暂时重叠，按出击朝向恢复间距，避免分离时绕背。
+      var s = dx === 0 ? a.facing : (dx > 0 ? 1 : -1);
       var push = (min - Math.abs(dx)) / 2;
       a.x = U.clamp(a.x - s * push, 70, U.W - 70);
       b.x = U.clamp(b.x + s * push, 70, U.W - 70);
@@ -633,12 +663,12 @@
   };
 
   Game.prototype.resolveHit = function (att, target, def, source, point) {
-    if (this.roundOver) return;
-    if (!target || target.state === 'ko') return;
+    if (this.roundOver || !target || target.state === 'ko' || target.invuln > 0 ||
+        (target.state === 'dash' && target.dashHidden)) return 'whiff';
     var blocked = target.state === 'block' && target.invuln <= 0;
     if (blocked) {
-      target.blockHit(def, source);
-      return;
+      target.blockHit(def, source, point);
+      return 'block';
     }
     var ok = target.takeHit(att, def, source, point);
     if (ok && att) {
@@ -646,35 +676,46 @@
       att.comboT = 2.0;
       if (att.combo > att.maxCombo) att.maxCombo = att.combo;
     }
+    return ok ? 'hit' : 'whiff';
   };
 
   Game.prototype.onHit = function (att, target, def, hitPoint) {
-    var heavy = !!(def.launch || (def.dmg >= 66));
+    var tier = def.tier || 1;
+    var impact = g.IMPACTS[tier];
+    var light = !!def.light;
     var px = hitPoint ? hitPoint.x : target.x;
     var py = hitPoint ? hitPoint.y : target.y - 100;
-    this.hitstop = Math.max(this.hitstop, heavy ? 0.085 : 0.05);
-    this.shake = Math.max(this.shake, heavy ? 15 : (def.dmg > 60 ? 9 : 6));
-    this.flash = Math.min(0.85, this.flash + (heavy ? 0.16 : 0.05));
-    this.audio.hit(heavy);
+    this.hitstop = Math.max(this.hitstop, light ? 0.012 : impact.stop);
+    this.shake = Math.max(this.shake, light ? 2 : impact.shake);
+    this.flash = Math.min(0.85, this.flash + (light ? 0.015 : tier * 0.035));
+    if (!light && impact.zoom > 1) {
+      this.zoomTarget = Math.max(this.zoomTarget, impact.zoom);
+      this.zoomHold = 0.32;
+    }
+    if (light) this.audio.ultTick();
+    else this.audio.hit(tier);
     this.fx.burst(px, py, {
-      n: heavy ? 18 : 10,
-      color: target.pal.glow,
-      speed: heavy ? 430 : 300,
+      n: light ? 4 : impact.dots,
+      color: '#26303b',
+      speed: light ? 140 : 180 + tier * 70,
       life: 0.4,
-      size: heavy ? 6 : 4
+      size: light ? 2.5 : 2.5 + tier
     });
-    this.fx.ring(px, py, 'rgba(255,255,255,0.65)', 4, heavy ? 86 : 54, 0.24);
-    this.fx.text(target.x, target.y - 178, '-' + def.dmg, heavy ? '#ffd7a1' : '#ffffff', heavy ? 30 : 24);
+    if (!light) this.fx.ring(px, py, target.pal.glow, 4, 28 + tier * 20, 0.24);
+    this.fx.text(target.x, target.y - 178, '-' + def.dmg,
+      tier >= 4 ? '#ffd7a1' : '#ffffff', light ? 18 : 20 + tier * 3);
   };
 
-  Game.prototype.onBlock = function (target, def) {
+  Game.prototype.onBlock = function (target, def, point) {
     var opp = this.opponentOf(target);
     var dir = opp && opp.x > target.x ? 1 : -1;
-    this.audio.block();
-    this.fx.burst(target.x + dir * 34, target.y - 100, { n: 8, color: '#cfe0ff', speed: 190, life: 0.26, size: 3 });
+    var tier = def.tier || 1;
+    this.audio.block(tier);
+    this.fx.scrape(point ? point.x : target.x + dir * 34,
+      point ? point.y : target.y - 100, dir, tier, !!def.light);
     this.fx.text(target.x, target.y - 168, '格挡', '#9fc4e8', 18);
-    this.shake = Math.max(this.shake, 3);
-    this.hitstop = Math.max(this.hitstop, 0.022);
+    this.shake = Math.max(this.shake, def.light ? 1 : 1 + tier * 0.6);
+    this.hitstop = Math.max(this.hitstop, def.light ? 0.01 : g.IMPACTS[tier].blockStop);
   };
 
   // ---------------- 替身术 / 连击保护 ----------------
@@ -752,6 +793,7 @@
   Game.prototype.updateProjectiles = function (dt) {
     for (var i = this.projectiles.length - 1; i >= 0; i--) {
       var p = this.projectiles[i];
+      var oldX = p.x;
       p.t += dt;
       p.x += p.dir * g.PROJ.speed * dt;
       p.trailT -= dt;
@@ -762,17 +804,24 @@
         });
       }
 
+      // 木桩只消耗轨迹，不触发命中墨爆、伤害数字或顿帧。
+      var decoyHit = this.decoys.some(function (d) {
+        return d.pal !== p.owner.pal && Math.abs(d.y - p.depth) <= U.DEPTH_HIT &&
+          Math.max(oldX, p.x) + 18 >= d.x - 30 && Math.min(oldX, p.x) - 18 <= d.x + 30;
+      });
+      if (decoyHit) { this.projectiles.splice(i, 1); continue; }
+
       var opp = this.opponentOf(p.owner);
       if (opp && opp.state !== 'ko' && !this.roundOver) {
         var hb = opp.hurtbox();
-        var box = { x: p.x - 18, y: p.y - 12, w: 36, h: 24 };
-        if (opp.invuln <= 0 && Math.abs(opp.y - p.depth) <= U.DEPTH_HIT && U.rects(box, hb)) {
-          this.resolveHit(p.owner, opp, g.PROJ, 'proj', { x: p.x, y: p.y, w: 1, h: 1 });
-          this.fx.burst(p.x, p.y, { n: 16, color: p.owner.pal.glow, speed: 360, life: 0.4, size: 5 });
-          this.fx.ring(p.x, p.y, p.owner.pal.glow, 8, 82, 0.3);
-          this.audio.projectileHit();
-          this.projectiles.splice(i, 1);
-          continue;
+        var box = { x: Math.min(oldX, p.x) - 18, y: p.y - 12, w: Math.abs(p.x - oldX) + 36, h: 24 };
+        if (Math.abs(opp.y - p.depth) <= U.DEPTH_HIT && U.rects(box, hb)) {
+          var contactX = U.clamp(p.dir > 0 ? hb.x : hb.x + hb.w, Math.min(oldX, p.x), Math.max(oldX, p.x));
+          var result = this.resolveHit(p.owner, opp, g.PROJ, 'proj', { x: contactX, y: p.y });
+          if (result !== 'whiff') {
+            this.projectiles.splice(i, 1);
+            continue;
+          }
         }
       }
 
@@ -785,69 +834,41 @@
 
   Game.prototype.onUltStart = function (f) {
     this.audio.charge();
-    this.shake = Math.max(this.shake, 8);
-    this.zoomTarget = 1.04;
+    this.shake = Math.max(this.shake, 3);
   };
 
   Game.prototype.onUltCast = function (f) {
-    this.flash = 0.85;
-    this.shake = 32;
-    this.zoomTarget = 1.06;
-    this.audio.ultBoom();
+    var opp = this.opponentOf(f);
+    // 固定在落剑开始时的位置；离开横向范围或纵深即可躲过这一剑。
+    f.rainArea = { x: opp ? opp.x : f.x, y: opp ? opp.y : f.y };
+    this.flash = 0.18;
+    this.shake = Math.max(this.shake, 4);
+    this.audio.swish(true);
     this.castGlow = 1.5;
     this.ultCaster = f;
     this.banner = { text: '万 剑 归 宗', color: f.pal.glow, sub: '内力爆发', t: 0, dur: 1.5 };
-    this.fx.ring(f.x, f.y - 90, f.pal.glow, 20, 340, 0.6);
-    this.fx.burst(f.x, f.y - 100, { n: 30, color: f.pal.glow, speed: 560, life: 0.6, size: 7 });
+    this.fx.ring(f.rainArea.x, f.rainArea.y - 8, f.pal.glow, 20, ULT.rainHalfWidth, 0.6);
+  };
+
+  Game.prototype.inSwordRain = function (f, target) {
+    return !!(target && f.rainArea && Math.abs(target.x - f.rainArea.x) <= ULT.rainHalfWidth &&
+      Math.abs(target.y - f.rainArea.y) <= U.DEPTH_HIT);
   };
 
   Game.prototype.onUltTick = function (f) {
     if (this.roundOver) return;
     var opp = this.opponentOf(f);
-    if (!opp || opp.state === 'ko') return;
-    var dmg = ULT.tickDmg;
-    opp.hp = Math.max(0, opp.hp - dmg);
-    opp.flash = 0.1;
-    opp.state = 'hurt';
-    opp.hurtT = 0.16;
-    opp.vx = 0;
-    opp.vy = 0;
-    opp.comboLockT = 0; // 大招演出不计入「连击保护」计时
-    opp.hurtWindowT = 0;
-    f.combo++;
-    f.comboT = 2.0;
-    if (f.combo > f.maxCombo) f.maxCombo = f.combo;
-    this.fx.burst(opp.x + U.rand(-26, 26), opp.y - U.rand(20, 150), {
-      n: 5, color: f.pal.glow, speed: 320, life: 0.3, size: 4
-    });
-    var stagger = (f.combo % 4) * 24;
-    this.fx.text(opp.x + U.rand(-46, 46), opp.y - 120 - stagger - U.rand(0, 40), '-' + dmg, '#ffe7b0', 18);
-    this.shake = Math.max(this.shake, 5);
-    this.hitstop = Math.max(this.hitstop, 0.012);
-    this.audio.ultTick();
+    if (!this.inSwordRain(f, opp)) return 'whiff';
+    return this.resolveHit(f, opp, ULT.tick, 'rain', { x: opp.x, y: opp.y - 100 });
   };
 
   Game.prototype.onUltFinish = function (f) {
     if (this.roundOver) return;
     var opp = this.opponentOf(f);
-    if (opp && opp.state !== 'ko') {
-      opp.hp = Math.max(0, opp.hp - ULT.finalDmg);
-      opp.flash = 0.2;
-      opp.state = 'hurt';
-      opp.hurtT = 0.32;
-      opp.comboLockT = 0;
-      opp.hurtWindowT = 0;
-      opp.vx = (opp.x < f.x ? -1 : 1) * 260;
-      this.fx.burst(opp.x, opp.y - 80, { n: 26, color: f.pal.glow, speed: 580, life: 0.6, size: 8 });
-      this.fx.ring(opp.x, opp.y - 70, f.pal.glow, 10, 150, 0.45);
-      this.fx.text(opp.x, opp.y - 214, '-' + ULT.finalDmg, '#ffd7a1', 34);
-      this.shake = Math.max(this.shake, 18);
-      this.flash = Math.min(1, this.flash + 0.3);
-      this.audio.hit(true);
-      f.combo++;
-      if (f.combo > f.maxCombo) f.maxCombo = f.combo;
-    }
-    this.zoomTarget = 1;
+    var area = f.rainArea;
+    if (area) this.fx.slash(area.x, area.y, f.facing, f.pal.glow, 5);
+    if (!this.inSwordRain(f, opp)) return 'whiff';
+    return this.resolveHit(f, opp, ULT.final, 'ult', { x: opp.x, y: opp.y - 80 });
   };
 
   // ---------------- 渲染 ----------------
@@ -928,25 +949,25 @@
       c.save();
       c.translate(p.x, p.y);
       if (p.dir < 0) c.rotate(Math.PI);
-      c.globalCompositeOperation = 'lighter';
-      var grd = c.createLinearGradient(-44, 0, 26, 0);
-      grd.addColorStop(0, 'rgba(255,255,255,0)');
-      grd.addColorStop(0.55, p.owner.pal.glow);
-      grd.addColorStop(1, '#ffffff');
-      c.strokeStyle = grd;
-      c.lineWidth = 7;
+      var width = g.IMPACTS[g.PROJ.tier].width;
+      c.strokeStyle = '#202a35';
+      c.lineWidth = width;
       c.lineCap = 'round';
       c.beginPath();
       c.moveTo(-44, 0);
       c.lineTo(20, 0);
       c.stroke();
-      c.globalAlpha = 0.4;
-      c.fillStyle = p.owner.pal.glow;
+      var grd = c.createLinearGradient(-44, 0, 26, 0);
+      grd.addColorStop(0, 'rgba(255,255,255,0)');
+      grd.addColorStop(0.55, p.owner.pal.glow);
+      grd.addColorStop(1, '#ffffff');
+      c.strokeStyle = grd;
+      c.lineWidth = width * 0.3;
       c.beginPath();
-      c.arc(4, 0, 17, 0, Math.PI * 2);
-      c.fill();
-      c.globalAlpha = 1;
-      c.fillStyle = '#ffffff';
+      c.moveTo(-44, 0);
+      c.lineTo(20, 0);
+      c.stroke();
+      c.fillStyle = p.owner.pal.glow;
       c.beginPath();
       c.moveTo(26, 0);
       c.lineTo(7, -10);
@@ -1189,8 +1210,8 @@
     c.fillStyle = 'rgba(222, 234, 247, 0.88)';
     c.fillText('J 连斩 · K 剑气 · L 残影步 · U 万剑归宗 · I 替身 · Q 格挡', 640, U.H - 42);
     c.fillText(this.mode === 2
-      ? 'P1：WASD 四向移动 · P2：方向键四向移动 · 左右方向决定出招朝向 · 被击中时按替身键脱身'
-      : 'WASD 四向移动 · 左右方向决定出招朝向 · Q 格挡 · 被击中时按 I 替身脱身（耗内力）', 640, U.H - 64);
+      ? 'P1：WASD 四向移动 · P2：方向键四向移动 · 左右决定朝向（松手保持）· 被击中时按替身键脱身'
+      : 'WASD 四向移动 · 左右决定朝向（松手保持）· Q 格挡 · 被击中时按 I 替身脱身（耗内力）', 640, U.H - 64);
     c.restore();
     c.textAlign = 'left';
   };

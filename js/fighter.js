@@ -7,33 +7,47 @@
   var DEPTH_MAX = U.DEPTH_MAX;
   var MAX_METER = 100;
 
+  // 力度只由招式档位决定；伤害不参与演出分档。
+  var IMPACTS = {
+    1: { stop: 0.04, blockStop: 0.016, shake: 4, zoom: 1, dots: 8, width: 7, radius: 78, arc: 0.72 },
+    2: { stop: 0.06, blockStop: 0.020, shake: 7, zoom: 1, dots: 12, width: 11, radius: 102, arc: 1.02 },
+    3: { stop: 0.08, blockStop: 0.024, shake: 10, zoom: 1.03, dots: 16, width: 14, radius: 112, arc: 1.12 },
+    4: { stop: 0.11, blockStop: 0.028, shake: 16, zoom: 1.06, dots: 22, width: 19, radius: 132, arc: 1.25 },
+    5: { stop: 0.14, blockStop: 0.03, shake: 24, zoom: 1.12, dots: 32, width: 25, radius: 158, arc: 1.4 }
+  };
+
   var ATTACKS = {
     a1: {
       key: 'a1', name: '横斩',
       startup: 0.085, active: 0.09, recovery: 0.16,
-      dmg: 46, hitstun: 0.22, kb: 130, chain: 'a2',
+      dmg: 40, hitstun: 0.16, kb: 70, tier: 1, chain: 'a2',
       box: { ox: 16, oy: -142, w: 112, h: 92 },
       lunge: 260, heavy: false
     },
     a2: {
       key: 'a2', name: '撩剑',
       startup: 0.10, active: 0.09, recovery: 0.19,
-      dmg: 58, hitstun: 0.26, kb: 180, chain: 'a3',
+      dmg: 56, hitstun: 0.22, kb: 150, tier: 2, chain: 'a3',
       box: { ox: 18, oy: -132, w: 122, h: 102 },
       lunge: 300, heavy: false
     },
     a3: {
       key: 'a3', name: '崩山',
       startup: 0.17, active: 0.12, recovery: 0.34,
-      dmg: 92, hitstun: 0.44, kb: 330, launch: true, chain: null,
+      dmg: 104, hitstun: 0.44, kb: 360, tier: 4, launch: true, chain: null,
       box: { ox: 14, oy: -170, w: 152, h: 154 },
       lunge: 360, heavy: true
     }
   };
 
-  var PROJ = { dmg: 88, hitstun: 0.30, kb: 240, speed: 830, cooldown: 2.5, name: '剑气' };
-  var DASH = { dmg: 66, hitstun: 0.38, kb: 90, dur: 0.22, speed: 1520, cd: 2.8, name: '残影步' };
-  var ULT = { tickDmg: 32, finalDmg: 72, charge: 0.9, cast: 1.25, recover: 0.4 };
+  var PROJ = { dmg: 72, hitstun: 0.26, kb: 230, tier: 3, speed: 830, cooldown: 2.5, name: '剑气' };
+  var DASH = { dmg: 72, hitstun: 0.26, kb: 50, tier: 3, vanish: 0.12, recover: 0.10, dist: 76, cd: 2.8, name: '残影步' };
+  var ULT = {
+    tickDmg: 8, finalDmg: 200, charge: 0.9, cast: 1.25, recover: 0.4,
+    interval: 0.115, rainHalfWidth: 190,
+    tick: { dmg: 8, hitstun: 0.07, kb: 0, tier: 5, light: true, chip: 0, name: '落剑' },
+    final: { dmg: 200, hitstun: 0.65, kb: 420, tier: 5, launch: true, name: '万剑归宗' }
+  };
 
   // 替身术：被连击时唯一的脱身手段（消耗内力 + 冷却）
   var SUB = { cost: 20, cd: 6.0, invuln: 0.55, dur: 0.2, dist: 120, name: '替身术' };
@@ -68,6 +82,8 @@
     this.invuln = 0;
     this.flash = 0;
     this.dashHit = false;
+    this.dashHidden = false;
+    this.dashSide = 1;
     this.afterimageT = 0;
     this.afterimages = [];
     this.inputDir = 0;
@@ -82,10 +98,12 @@
     this.y = GROUND;
     this.x = 640;
     this.facing = 1;
+    this.autoFace = true; // 仅 AI 一方在空闲时自动转向对手；人类玩家松手保持朝向
     this.phase = null;
     this.ultT = 0;
     this.ultTickT = 0;
     this.ultBurst = 0;
+    this.rainArea = null;
     this.blockGlow = 0;
     this.koDown = false;
   };
@@ -210,15 +228,16 @@
     this.integrate(dt);
   };
 
-  // 朝向：左右方向键决定朝向（技能就朝那个方向放），
-  // 松手站定时自动面向对手；W/S（纵深移动）不改变朝向。
+  // 朝向：左右方向键决定朝向（技能就朝那个方向放），松手保持当前朝向；
+  // 只有 AI 操控的一方会在空闲时自动转向对手（否则它瞄不准玩家）。
+  // W/S（纵深移动）不改变左右朝向。
   Fighter.prototype.updateFacing = function (inp) {
     var dir = (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
     this.inputDir = dir;
     if (this.state === 'idle' || this.state === 'walk' || this.state === 'block') {
       if (dir !== 0) {
         this.facing = dir;
-      } else {
+      } else if (this.autoFace) {
         var opp = this.opponent();
         if (opp) this.facing = opp.x >= this.x ? 1 : -1;
       }
@@ -267,7 +286,7 @@
     this.castFx = { id: 'atk', t: 0.16 };
     if (def.lunge) this.vx = this.facing * def.lunge * 0.3;
     this.vy = 0;
-    this.game.audio.swish(false);
+    this.game.audio.swish(def.heavy);
   };
 
   Fighter.prototype.updateAttack = function (dt) {
@@ -285,7 +304,7 @@
     }
 
     if (prev < d.startup && a.t >= d.startup) {
-      this.game.fx.slash(this.x, this.y, this.facing, this.pal.glow, d.heavy);
+      this.game.fx.slash(this.x, this.y, this.facing, this.pal.glow, d.tier);
     }
 
     if (a.t >= d.startup && a.t <= d.startup + d.active && !a.hit) {
@@ -310,9 +329,16 @@
   Fighter.prototype.tryHit = function (d) {
     var opp = this.opponent();
     if (!opp || opp.state === 'ko' || this.game.roundOver) return;
+    var box = this.hitbox(d);
+    var self = this;
+    var decoyHit = this.game.decoys.some(function (decoy) {
+      var s = U.depthScale(decoy.y);
+      return decoy.pal !== self.pal && Math.abs(self.y - decoy.y) <= U.DEPTH_HIT &&
+        U.rects(box, { x: decoy.x - 30 * s, y: decoy.y - 152 * s, w: 60 * s, h: 152 * s });
+    });
+    if (decoyHit) { this.atk.hit = true; return; }
     // 2.5D：招式同时要求在「同一纵深」附近才命中，前后错开会落空。
     if (Math.abs(this.y - opp.y) > U.DEPTH_HIT) return;
-    var box = this.hitbox(d);
     var hb = opp.hurtbox();
     if (!U.rects(box, hb)) return;
     this.atk.hit = true;
@@ -335,10 +361,13 @@
     this.dashCd = DASH.cd;
     this.castFx = { id: 'dash', t: 0.22 };
     this.state = 'dash';
-    this.stateT = DASH.dur;
+    this.stateT = DASH.vanish;
     this.dashHit = false;
-    this.invuln = Math.max(this.invuln, DASH.dur + 0.07);
-    this.vx = this.facing * DASH.speed;
+    this.dashHidden = true;
+    var opp = this.opponent();
+    this.dashSide = opp ? (U.sign(this.x - opp.x) || -this.facing) : -this.facing;
+    this.invuln = Math.max(this.invuln, DASH.vanish);
+    this.vx = 0;
     this.vy = 0;
     this.afterimageT = 0;
     this.game.audio.dash();
@@ -349,23 +378,25 @@
 
   Fighter.prototype.updateDash = function (dt) {
     this.stateT -= dt;
-    this.vx = this.facing * (this.stateT > 0.05 ? DASH.speed : 260);
-    this.afterimageT -= dt;
-    if (this.afterimageT <= 0) {
-      this.afterimageT = 0.032;
-      this.pushAfterimage();
-    }
+    this.vx = 0;
+    if (this.stateT > 0.000001) return;
+    if (!this.dashHidden) { this.toNeutral(false); return; }
+    this.dashHidden = false;
+    this.stateT += DASH.recover;
     var opp = this.opponent();
-    if (opp && opp.state !== 'ko' && !this.dashHit && !this.game.roundOver) {
-      if (Math.abs(this.y - opp.y) <= U.DEPTH_HIT &&
-          U.rects(this.body(), opp.hurtbox()) && opp.invuln <= 0) {
-        this.dashHit = true;
-        this.game.resolveHit(this, opp, DASH, 'dash', { x: this.x, y: this.y - 95, w: 1, h: 1 });
-        var s = this.depthScale();
-        this.game.fx.ring(this.x, this.y - 80 * s, this.pal.glow, 20 * s, 130 * s, 0.34);
-      }
+    if (opp) {
+      this.x = U.clamp(opp.x + this.dashSide * DASH.dist, 70, U.W - 70);
+      this.y = U.clamp(opp.y, DEPTH_MIN, DEPTH_MAX);
+      this.facing = -this.dashSide;
     }
-    if (this.stateT <= 0) this.toNeutral(false);
+    var s = this.depthScale();
+    this.game.fx.ring(this.x, this.y - 60 * s, this.pal.glow, 10, 86 * s, 0.3);
+    this.game.fx.slash(this.x, this.y, this.facing, this.pal.glow, DASH.tier);
+    // 再现时只判定一次；无敌、倒地或替身都在落点挥空。
+    if (opp && opp.state !== 'down' && opp.state !== 'launched') {
+      this.dashHit = this.game.resolveHit(this, opp, DASH, 'dash',
+        { x: opp.x, y: opp.y - 95 * s }) !== 'whiff';
+    }
   };
 
   Fighter.prototype.pushAfterimage = function () {
@@ -429,11 +460,13 @@
   // ---------------- 连击保护（时间设定） ----------------
 
   Fighter.prototype.updateGuard = function () {
+    if (this.state === 'ko' || this.game.roundOver) return;
     if (this.protectT > 0) return;
     if (this.comboLockT >= COMBO_GUARD.time) this.triggerGuard();
   };
 
   Fighter.prototype.triggerGuard = function () {
+    if (this.state === 'ko' || this.game.roundOver) return; // KO 后不再「护体复活」
     var opp = this.opponent();
     var dir = opp ? (U.sign(this.x - opp.x) || 1) : 1;
 
@@ -484,16 +517,13 @@
     } else if (this.phase === 'cast') {
       this.ultTickT -= dt;
       if (this.ultTickT <= 0 && this.ultT < 1.08) {
-        this.ultTickT = 0.115;
+        this.ultTickT += ULT.interval;
         this.game.onUltTick(this);
         var k;
-        var oppx = this.game.opponentOf(this).x;
         for (k = 0; k < 4; k++) {
-          var sx = k === 0 ? oppx : this.x;
-          this.game.fx.swordRain(U.clamp(sx + U.rand(-380, 380), 80, 1200), U.rand(0.01, 0.38), this.pal.sword);
+          this.game.fx.swordRain(U.clamp(this.rainArea.x + U.rand(-ULT.rainHalfWidth, ULT.rainHalfWidth), 30, U.W - 30),
+            U.rand(0.01, 0.12), this.pal.sword, this.rainArea.y);
         }
-        this.game.fx.ring(oppx, this.game.opponentOf(this).y - 95,
-          this.pal.glow, 24, 76, 0.22);
       }
       if (this.ultT >= ULT.cast) {
         this.phase = 'recover';
@@ -510,21 +540,21 @@
 
   // ---------------- 受击 ----------------
 
-  Fighter.prototype.blockHit = function (def, source) {
-    var chip = Math.max(1, Math.round((def.dmg || 0) * 0.14));
+  Fighter.prototype.blockHit = function (def, source, hitPoint) {
+    var chip = def.chip == null ? Math.max(1, Math.round((def.dmg || 0) * 0.14)) : def.chip;
     this.hp = Math.max(0, this.hp - chip);
     this.meter = Math.min(MAX_METER, this.meter + 2);
     this.flash = 0.05;
     this.blockGlow = 0.18;
     var opp = this.opponent();
-    this.vx = (opp && opp.x > this.x ? -1 : 1) * 95;
-    this.game.onBlock(this, def);
+    if (!def.light) this.vx = (opp && opp.x > this.x ? -1 : 1) * 95;
+    this.game.onBlock(this, def, hitPoint);
     return chip;
   };
 
   Fighter.prototype.takeHit = function (att, def, source, hitPoint) {
     if (this.state === 'ko') return false;
-    if (this.invuln > 0 && this.state !== 'hurt') return false;
+    if (this.invuln > 0) return false;
     var dmg = def.dmg || 1;
     this.hp = Math.max(0, this.hp - dmg);
     this.meter = Math.min(MAX_METER, this.meter + dmg * 0.06);
@@ -533,19 +563,22 @@
     this.combo = 0;
     this.comboT = 0;
     this.hurtWindowT = 0; // 重新开始「连续被击打」的时间窗口
+    // 保留原有大招不累计连击保护的规则，落剑仍可在硬直间隙格挡。
+    if (source === 'rain' || source === 'ult') this.comboLockT = 0;
     this.blockGlow = 0;
-    var dir = att ? (U.sign(this.x - att.x) || 1) : 1;
-    this.vx = dir * (def.kb || 120);
-    this.vy = 0;
+    var dir = att ? (U.sign(this.x - att.x) || att.facing) : 1;
+    if (def.kb !== 0) {
+      this.vx = dir * (def.kb == null ? 120 : def.kb);
+      this.vy = 0;
+    }
     if (def.launch) {
       // 仍然保留「第三段击倒」的演出：滑退 → 倒地 → 起身
       this.state = 'launched';
-      this.hurtT = 0.55;
-      this.vx = dir * (def.kb || 300) * 0.85;
+      this.hurtT = def.hitstun;
       this.game.fx.dust(this.x, -dir, this.y);
     } else {
       this.state = 'hurt';
-      this.hurtT = Math.max(def.hitstun || 0.2, 0.12);
+      this.hurtT = def.hitstun == null ? 0.2 : def.hitstun;
     }
     this.game.onHit(att, this, def, hitPoint);
     return true;
@@ -577,6 +610,8 @@
       a = this.afterimages[i];
       this.drawGhost(c, a);
     }
+
+    if (this.state === 'dash' && this.dashHidden) return;
 
     var s = this.depthScale();
     c.save();
@@ -624,7 +659,7 @@
       c.restore();
     }
 
-    if (this.protectT > 0) this.drawGuard(c);
+    if (this.protectT > 0 && this.state !== 'ko') this.drawGuard(c);
     else if (this.comboLockT > 0.62 && this.state !== 'ko') this.drawGuardWarn(c);
 
     this.drawBody(c);
@@ -988,6 +1023,7 @@
 
   g.Fighter = Fighter;
   g.ATTACKS = ATTACKS;
+  g.IMPACTS = IMPACTS;
   g.PROJ = PROJ;
   g.DASH = DASH;
   g.ULT = ULT;

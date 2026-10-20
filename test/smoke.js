@@ -146,7 +146,7 @@ game.pressed.add('KeyL');
 game.step(1 / 60);
 check('残影步进入 dash 状态', d1.state === 'dash', d1.state);
 for (let i = 0; i < 30; i++) game.step(1 / 60);
-check('残影步穿身扣血', d2.hp < hpC, 'p2.hp=' + d2.hp);
+check('残影步现身一击扣血', d2.hp < hpC, 'p2.hp=' + d2.hp);
 
 // ---- 6. 万剑归宗 ----
 console.log('[6] 万剑归宗');
@@ -245,10 +245,14 @@ const bx = b1.x;
 game.keys.add('KeyA');
 game.pressed.add('KeyL');
 game.step(1 / 60);
-check('残影步朝左冲刺（vx < 0）', b1.state === 'dash' && b1.vx < 0,
+check('残影步先原地消失（vx = 0）', b1.state === 'dash' && b1.dashHidden && b1.vx === 0,
   'state=' + b1.state + ' vx=' + b1.vx);
 game.step(1 / 60);
-check('残影步向左位移', b1.x < bx, 'x: ' + bx + ' -> ' + b1.x);
+check('残影步消失阶段不滑行', b1.x === bx, 'x: ' + bx + ' -> ' + b1.x);
+for (let i = 0; i < 12; i++) game.step(1 / 60);
+check('残影步落到对手近侧并面向对手', b1.x < game.fighters[1].x &&
+  Math.abs(b1.x - game.fighters[1].x) < 90 && b1.facing === 1,
+  'x=' + b1.x + ' facing=' + b1.facing);
 game.keys.delete('KeyA');
 
 game.startMatch(2);
@@ -266,7 +270,52 @@ for (let i = 0; i < 40; i++) game.step(1 / 60);
 check('朝左出招打不到右侧的对手', c2.hp === c2hp, 'p2.hp=' + c2.hp + ' (from ' + c2hp + ')');
 game.keys.delete('KeyA');
 for (let i = 0; i < 40; i++) game.step(1 / 60);
-check('松开方向键后自动面向对手', c1.facing === 1, 'facing=' + c1.facing);
+check('松开方向键后保持朝向（不再自动转向对手）', c1.facing === -1, 'facing=' + c1.facing);
+game.keys.add('KeyD');
+for (let i = 0; i < 4; i++) game.step(1 / 60);
+game.keys.delete('KeyD');
+for (let i = 0; i < 40; i++) game.step(1 / 60);
+check('再按 D 转向右后松手仍保持', c1.facing === 1, 'facing=' + c1.facing);
+c1.facing = -1;
+game.keys.add('KeyW');
+for (let i = 0; i < 12; i++) game.step(1 / 60);
+game.keys.delete('KeyW');
+check('纵深移动（W/S）不改变左右朝向', c1.facing === -1, 'facing=' + c1.facing);
+
+// 用户场景：按住 A 转身 → 松手 → 再放剑气，应该朝左
+game.startMatch(2);
+for (let i = 0; i < 100; i++) game.step(1 / 60);
+const r1 = game.fighters[0];
+r1.x = 500; game.fighters[1].x = 900;
+game.keys.add('KeyA');
+for (let i = 0; i < 5; i++) game.step(1 / 60);
+game.keys.delete('KeyA');
+for (let i = 0; i < 20; i++) game.step(1 / 60);
+game.pressed.add('KeyK');
+game.step(1 / 60);
+check('松手后放剑气仍朝最后朝向', r1.facing === -1 &&
+  game.projectiles.length > 0 && game.projectiles[0].dir === -1,
+  'facing=' + r1.facing + ' dir=' + (game.projectiles[0] && game.projectiles[0].dir));
+
+// 人类松手保持朝向；AI 仍会自动面向对手（否则瞄不准玩家）
+game.startMatch(1);
+check('1P：玩家手动朝向、AI 自动面向玩家',
+  game.fighters[0].autoFace === false && game.fighters[1].autoFace === true,
+  'p1=' + game.fighters[0].autoFace + ' p2=' + game.fighters[1].autoFace);
+game.startMatch(2);
+check('2P：双方松手都保持朝向',
+  game.fighters[0].autoFace === false && game.fighters[1].autoFace === false);
+check('开局双方面对面', game.fighters[0].facing === 1 && game.fighters[1].facing === -1,
+  'p1=' + game.fighters[0].facing + ' p2=' + game.fighters[1].facing);
+
+// 1P 实战：玩家站桩不自动转身，AI 仍能自动瞄准并命中
+game.startMatch(1);
+for (let i = 0; i < 100; i++) game.step(1 / 60);
+const hpBefore = game.fighters[0].hp;
+for (let i = 0; i < 600; i++) game.step(1 / 60);
+check('1P：玩家不自动转身、AI 仍能命中玩家',
+  game.fighters[0].facing === 1 && game.fighters[0].hp < hpBefore,
+  'facing=' + game.fighters[0].facing + ' hp ' + hpBefore + ' -> ' + game.fighters[0].hp);
 
 // ---- 10.5 四向移动 / 纵深判定 ----
 console.log('[10.5] 四向移动 / 纵深判定');
@@ -404,6 +453,21 @@ for (let i = 0; i < 90; i++) game.step(1 / 60);
 check('单次受击不会触发连击保护', w2.protectT === 0, 'protectT=' + w2.protectT);
 check('间隔超时后连续计时清零', w2.comboLockT === 0, 'comboLockT=' + w2.comboLockT);
 
+// KO 边界：KO 后不能再触发连击保护，把尸体「拉起来」
+game.startMatch(2);
+for (let i = 0; i < 100; i++) game.step(1 / 60);
+const ko1 = game.fighters[0], ko2 = game.fighters[1];
+ko1.x = 640; ko2.x = 735;
+ko2.hp = 40; // 下一击致死
+ko2.comboLockT = 1.44;
+ko2.hurtWindowT = 0;
+game.resolveHit(ko1, ko2, sandbox.ATTACKS.a1, 'melee', { x: ko2.x, y: ko2.y - 100, w: 1, h: 1 });
+for (let i = 0; i < 150; i++) game.step(1 / 60);
+check('KO 后不会被连击保护拉回站立', ko2.state === 'ko' && ko2.protectT === 0,
+  'state=' + ko2.state + ' protectT=' + ko2.protectT);
+check('KO 后正常进入结算', game.state === 'result' && game.result && game.result.reason === 'ko',
+  'state=' + game.state + ' reason=' + (game.result && game.result.reason));
+
 // ---- 13. 自检场景 ----
 console.log('[13] 自检场景');
 game.paused = false;
@@ -414,6 +478,11 @@ game.paused = false;
 game.setupGuardScene();
 const gv = game.fighters[1];
 check('连击保护场景可定格', game.paused === true && gv.protectT > 0, 'protectT=' + gv.protectT);
+game.paused = false;
+game.setupDepthScene();
+check('纵深展示场景可定格', game.paused === true &&
+  Math.abs(game.fighters[0].y - game.fighters[1].y) > 80,
+  'y=' + game.fighters[0].y + '/' + game.fighters[1].y);
 game.render();
 
 console.log(failures === 0 ? '\n全部通过 ✅' : '\n有 ' + failures + ' 项失败 ❌');

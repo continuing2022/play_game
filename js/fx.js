@@ -85,23 +85,37 @@
     this.burst(x + (dir || 0) * 10, y, { n: 8, color: color, speed: 200, life: 0.22, size: 5 });
   };
 
-  FXSystem.prototype.slash = function (x, y, facing, color, heavy) {
+  FXSystem.prototype.slash = function (x, y, facing, color, tier) {
+    var impact = g.IMPACTS[tier || 1];
+    var life = 0.14 + (tier || 1) * 0.025;
     this.slashes.push({
       x: x + facing * 16,
       y: y - 104,
       facing: facing,
       color: color,
-      life: heavy ? 0.24 : 0.17,
-      max: heavy ? 0.24 : 0.17,
-      radius: heavy ? 128 : 98,
-      width: heavy ? 18 : 11,
+      life: life,
+      max: life,
+      radius: impact.radius,
+      width: impact.width,
+      arc: impact.arc,
       angle: U.rand(-0.5, -0.15),
       spin: 1.5,
-      heavy: !!heavy
+      tier: tier || 1
     });
   };
 
-  FXSystem.prototype.swordRain = function (x, delay, color) {
+  // 擦墨沿切线散开，与命中的放射墨爆区分。
+  FXSystem.prototype.scrape = function (x, y, dir, tier, light) {
+    for (var i = 0; i < (light ? 3 : 3 + tier); i++) {
+      this.parts.push({ x: x, y: y + U.rand(-10, 10),
+        vx: dir * U.rand(35, 90), vy: U.rand(-100, -30),
+        life: 0.18, max: 0.18, size: light ? 1.5 : 1.5 + tier * 0.3,
+        color: '#293541', gravity: 160, drag: 3, mode: 'scrape' });
+    }
+    this.cap();
+  };
+
+  FXSystem.prototype.swordRain = function (x, delay, color, ground) {
     this.swords.push({
       x: x,
       y: -120 + U.rand(-40, 0),
@@ -110,7 +124,8 @@
       vr: U.rand(-0.8, 0.8),
       delay: delay || 0,
       color: color || '#ffe0ab',
-      len: U.rand(96, 138)
+      len: U.rand(96, 138),
+      ground: ground == null ? GROUND : ground
     });
   };
 
@@ -169,15 +184,13 @@
       if (s.delay > 0) { s.delay -= dt; continue; }
       s.y += s.vy * dt;
       s.rot += s.vr * dt;
-      if (s.y > GROUND + 24) {
-        this.burst(s.x, GROUND - 6, { n: 12, color: s.color, speed: 320, life: 0.34, size: 5, up: 60 });
-        this.ring(s.x, GROUND - 10, 'rgba(180, 215, 255, 0.5)', 6, heavyRingRadius(), 0.3);
+      if (s.y > s.ground + 24) {
+        // 挥空也会落墨，但不生成命中爆点或冲击环。
+        this.burst(s.x, s.ground - 6, { n: 2, color: '#26303b', speed: 45, life: 0.2, size: 2 });
         this.swords.splice(i, 1);
       }
     }
   };
-
-  function heavyRingRadius() { return 46; }
 
   FXSystem.prototype.draw = function (c) {
     var i, p;
@@ -251,6 +264,7 @@
     }
 
     // 斩击弧光
+    c.globalCompositeOperation = 'source-over';
     for (i = 0; i < this.slashes.length; i++) {
       var sl = this.slashes[i];
       var q = 1 - sl.life / sl.max;
@@ -261,16 +275,16 @@
       c.globalAlpha = Math.pow(1 - q, 0.7);
       c.lineCap = 'round';
 
-      c.strokeStyle = sl.color;
+      c.strokeStyle = '#202a35';
       c.lineWidth = sl.width * (1 - q * 0.5);
       c.beginPath();
-      c.arc(0, 0, sl.radius, -1.15, 1.15);
+      c.arc(0, 0, sl.radius, -sl.arc, sl.arc);
       c.stroke();
 
-      c.strokeStyle = '#ffffff';
+      c.strokeStyle = sl.color;
       c.lineWidth = Math.max(2, sl.width * 0.3);
       c.beginPath();
-      c.arc(0, 0, sl.radius, -1.0, 1.0);
+      c.arc(0, 0, sl.radius, -sl.arc * 0.86, sl.arc * 0.86);
       c.stroke();
       c.restore();
     }
@@ -282,6 +296,15 @@
       var a = U.clamp(p.life / p.max, 0, 1);
       c.globalAlpha = a;
       c.fillStyle = p.color;
+      if (p.mode === 'scrape') {
+        c.strokeStyle = p.color;
+        c.lineWidth = p.size;
+        c.beginPath();
+        c.moveTo(p.x, p.y);
+        c.lineTo(p.x - p.vx * 0.065, p.y - p.vy * 0.065);
+        c.stroke();
+        continue;
+      }
       c.beginPath();
       c.arc(p.x, p.y, Math.max(0.4, p.size * (0.35 + a * 0.65)), 0, Math.PI * 2);
       c.fill();

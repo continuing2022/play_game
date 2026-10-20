@@ -85,19 +85,22 @@
   AudioSys.prototype.swish = function (heavy) {
     this.noise(heavy ? 0.16 : 0.1, { type: 'bandpass', freq: heavy ? 1600 : 2400, q: 0.7, gain: heavy ? 0.16 : 0.1, slideTo: 500 });
   };
-  AudioSys.prototype.hit = function (heavy) {
-    if (heavy) {
-      this.noise(0.18, { type: 'lowpass', freq: 700, gain: 0.3 });
-      this.tone(95, 0.22, 'sine', 0.34, 42);
-      this.tone(320, 0.06, 'square', 0.08, 120);
+  AudioSys.prototype.hit = function (tier) {
+    tier = tier || 1;
+    if (tier >= 4) {
+      var finish = tier === 5;
+      this.noise(finish ? 0.25 : 0.18, { type: 'lowpass', freq: finish ? 520 : 700, gain: finish ? 0.38 : 0.3 });
+      this.tone(finish ? 72 : 95, finish ? 0.3 : 0.22, 'sine', finish ? 0.42 : 0.34, finish ? 30 : 42);
+      this.tone(finish ? 240 : 320, 0.06, 'square', finish ? 0.1 : 0.08, 100);
     } else {
-      this.noise(0.08, { type: 'bandpass', freq: 1300, q: 0.8, gain: 0.2 });
-      this.tone(240, 0.07, 'triangle', 0.12, 90);
+      this.noise(0.06 + tier * 0.02, { type: 'bandpass', freq: 1500 - tier * 200, q: 0.8, gain: 0.14 + tier * 0.04 });
+      this.tone(280 - tier * 40, 0.06 + tier * 0.02, 'triangle', 0.08 + tier * 0.04, 110 - tier * 15);
     }
   };
-  AudioSys.prototype.block = function () {
-    this.tone(1400, 0.05, 'square', 0.07, 900);
-    this.noise(0.05, { type: 'highpass', freq: 3000, gain: 0.12 });
+  AudioSys.prototype.block = function (tier) {
+    var gain = 1 + ((tier || 1) - 1) * 0.08;
+    this.tone(1400, 0.05, 'square', 0.07 * gain, 900);
+    this.noise(0.05, { type: 'highpass', freq: 3000, gain: 0.12 * gain });
   };
   AudioSys.prototype.shoot = function () {
     this.noise(0.18, { type: 'bandpass', freq: 600, q: 1.2, gain: 0.16, slideTo: 2800 });
